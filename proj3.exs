@@ -28,29 +28,52 @@ defmodule Proj3 do
       String.to_charlist(hash_key)
     end
     IO.inspect list_of_hexValues
-    # IO.inspect ['56A1','5DE6', '56B9']
+    # IO.inspect ['3f93','1c42', '309c','93cb','c3ca','d340','e9ce','fod7','2fe4','3f93','362d','705b','8887','3c6f']
 
-    # fill_routing_table('56A1',['5DE6', '56B9'])
+    # IO.inspect fill_routing_table('3f93',['1c42', '3c6f','309c','93cb','c3ca','d340','e9ce','fod7','2fe4','3f93','362d','705b','8887'])
 
-
-    for {hash_key , _pid} <- indexed_actors do
+    IO.inspect Enum.reduce(indexed_actors, %{}, fn {hash_key, _pid}, all_routing_tables ->
       # list_of_hexValues -- [String.to_charlist(hash_key)]
-      IO.puts "key changed"
-      IO.inspect fill_routing_table(String.to_charlist(hash_key), list_of_hexValues -- [String.to_charlist(hash_key)])
-    end
-    # IO.inspect x
+      # IO.puts "hash_key = #{hash_key}"
+      hash_key_routing_table = fill_routing_table(String.to_charlist(hash_key), list_of_hexValues -- [String.to_charlist(hash_key)])
+      Map.put(all_routing_tables,hash_key,hash_key_routing_table)
+    end)
+
+    # for {hash_key , _pid} <- indexed_actors do
+    #   # list_of_hexValues -- [String.to_charlist(hash_key)]
+    #   IO.puts "hash_key = #{hash_key}"
+    #   IO.inspect fill_routing_table(String.to_charlist(hash_key), list_of_hexValues -- [String.to_charlist(hash_key)])
+    # end
   end
 
   def fill_routing_table(hash_key,list_of_neighbors) do
 
     Enum.reduce(list_of_neighbors, %{}, fn neighbor_key,acc->
-
       level = 0
       key = Enum.reduce_while(neighbor_key, 0 ,fn char2,level ->
         if Enum.at(hash_key,level) == char2, do: {:cont, level+1}, else: {:halt, {level,List.to_string([char2])}}
       end)
 
-      Map.put(acc, key, neighbor_key)
+      #if multiple entries are found in one slot, store the closest neighbor in routing table
+      if Map.has_key?(acc,key) do
+        already_in_map_hexVal = Map.fetch!(acc,key)
+        {hash_key_integer,_} = Integer.parse(List.to_string(hash_key),16)
+        {already_in_map_integer,_} = Integer.parse(List.to_string(already_in_map_hexVal),16)
+        {neighbor_key_integer,_} = Integer.parse(List.to_string(neighbor_key),16)
+
+        dist1 = abs(hash_key_integer - already_in_map_integer)
+        dist2 = abs(hash_key_integer - neighbor_key_integer)
+        if dist1 < dist2 do
+          Map.put(acc, key, already_in_map_hexVal)
+        else
+          Map.put(acc, key, neighbor_key)
+        end
+
+      else
+        Map.put(acc, key, neighbor_key)
+      end
+
+      # Map.put(acc, key, neighbor_key)
     end)
   end
 
