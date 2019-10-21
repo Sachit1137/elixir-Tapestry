@@ -2,16 +2,17 @@ defmodule Proj3 do
   use GenServer
 
   def main do
+    # Input of the nodes, Topology and Algorithm
     input = System.argv()
     [numNodes, numRequests] = input
-    numNodes = numNodes |> String.to_integer()
-    numRequests = numRequests |> String.to_integer()
+    numNodes = String.to_integer(numNodes)
+    numRequests = String.to_integer(numRequests)
 
+    # Associating all nodes with their PID's
     allNodes =
       Enum.map(1..numNodes, fn x ->
-        {:ok, pid} = GenServer.start_link(__MODULE__, :ok, [])
-        #updatePIDState(pid, x)
-        updatePIDState(pid,String.to_charlist(:crypto.hash(:sha, "#{x}") |> Base.encode16()))
+        pid = start_node()
+        updatePIDState(pid, x)
         pid
       end)
 
@@ -21,40 +22,69 @@ defmodule Proj3 do
         Map.put(acc, String.to_charlist(:crypto.hash(:sha, "#{nodeID}") |> Base.encode16()), pids)
       end)
 
-    #IO.inspect(indexed_actors)
-
     list_of_hexValues =
       for {hash_key, _pid} <- indexed_actors do
         hash_key
       end
-      #IO.inspect(list_of_hexValues)
 
-    Enum.map(1..numNodes, fn x ->
-      nodeID = :crypto.hash(:sha, "#{x}") |> Base.encode16()
+    routing_tables =
+      Enum.reduce(indexed_actors, %{}, fn {hash_key, _pid}, all_routing_tables ->
+        hash_key_routing_table =
+          fill_routing_table(
+            hash_key,
+            list_of_hexValues -- [hash_key]
+          )
 
-      hash_key_routing_table =
-        fill_routing_table(
-          String.to_charlist(nodeID),
-          list_of_hexValues -- [String.to_charlist(nodeID)]
-        )
-        GenServer.call(Map.fetch!(indexed_actors, String.to_charlist(nodeID)), {:UpdateRoutingTable,hash_key_routing_table})
-    end)
+        Map.put(all_routing_tables, hash_key, hash_key_routing_table)
+      end)
 
-    #IO.inspect
-    tapestryAlgo(list_of_hexValues,indexed_actors,numRequests)
+    # IO.inspect routing_tables
+
+    hopping_list =
+      Enum.reduce(indexed_actors, [], fn {source_ID, _pid}, final_hop_list ->
+        # IO.inspect source_ID
+
+        destinationList = Enum.take_random(list_of_hexValues -- [source_ID], numRequests)
+        # IO.inspect destinationList
+
+        source_routing_table = Map.fetch!(routing_tables, source_ID)
+
+        final_hop_list ++
+          implementing_tapestry(
+            source_ID,
+            destinationList,
+            routing_tables,
+            source_routing_table,
+            indexed_actors
+          )
+      end)
+
+    # IO.inspect (hopping_list)
+    max_hops = Enum.max(hopping_list)
+    IO.puts("Maximum Hops = #{max_hops}")
   end
 
-  def commonPrefix(hash_key,neighbor_key) do
-    Enum.reduce_while(neighbor_key, 0, fn char2, level ->
-      if Enum.at(hash_key, level) == char2,
-        do: {:cont, level + 1},
-        else: {:halt, {level, List.to_string([char2])}}
+  def implementing_tapestry(node_ID, destinationList, routing_tables, node_table, _indexed_actors) do
+    Enum.reduce(destinationList, [], fn dest_ID, hop_list ->
+      hop_list ++ [next_hop(node_ID, dest_ID, routing_tables, node_table, 1)]
     end)
   end
+
+  def next_hop(node_ID, dest_ID, routing_tables, node_table, total_hops) do
+    key = commonPrefix(node_ID, dest_ID)
+
+    if(Map.fetch!(node_table, key) == dest_ID) do
+      total_hops
+    else
+      new_node_ID = Map.fetch!(node_table, key)
+      new_node_table = Map.fetch!(routing_tables, new_node_ID)
+      next_hop(new_node_ID, dest_ID, routing_tables, new_node_table, total_hops + 1)
+    end
+  end
+
   def fill_routing_table(hash_key, list_of_neighbors) do
     Enum.reduce(list_of_neighbors, %{}, fn neighbor_key, acc ->
-      key = commonPrefix(hash_key,neighbor_key)
-
+      key = commonPrefix(hash_key, neighbor_key)
 
       # if multiple entries are found in one slot, store the closest neighbor in routing table
       if Map.has_key?(acc, key) do
@@ -77,66 +107,32 @@ defmodule Proj3 do
     end)
   end
 
-   def tapestryAlgo(list_of_hexValues,indexed_actors,numRequests) do
-     Enum.map(indexed_actors, fn {hashKey,pid} ->
-      neighborList = list_of_hexValues
-      neighborList = neighborList -- [hashKey]
-      IO.inspect neighborList
-      IO.inspect hashKey
-      destinationList = Enum.take_random(neighborList,numRequests)
-      IO.inspect destinationList
-      IO.inspect "Iteration"
-      Enum.map(destinationList, fn destID ->
-        IO.inspect destID
-        IO.puts "Hello World"
-        GenServer.call(pid,{:UpdateNextHop,destID,indexed_actors})
-      end)
+  def commonPrefix(hash_key, neighbor_key) do
+    Enum.reduce_while(neighbor_key, 0, fn char2, level ->
+      if Enum.at(hash_key, level) == char2,
+        do: {:cont, level + 1},
+        else: {:halt, {level, List.to_string([char2])}}
     end)
-   end
+  end
 
   def init(:ok) do
-    {:ok, {0, %{}, 0}}
+    {:ok, {0, 0, [], 1}}
   end
 
-  def updatePIDState(pid, numNodeID) do
-    GenServer.call(pid, {:updatePID, numNodeID})
+  def start_node() do
+    {:ok, pid} = GenServer.start_link(__MODULE__, :ok, [])
+    pid
   end
 
-  def nextHop(newNodeID,destID,indexed_actors) do
-    GenServer.call(Map.fetch!(indexed_actors,newNodeID),{:UpdateNextHop,destID,indexed_actors})
+  def updatePIDState(pid, nodeID) do
+    GenServer.call(pid, {:UpdatePIDState, nodeID})
   end
 
-  def handle_call({:UpdateNextHop,destID,indexed_actors},_from,state) do
-    {nodeID, neighborTable, counter} = state
-    IO.inspect nodeID
-    IO.inspect destID
-    IO.puts "Iteration"
-    state = {nodeID, neighborTable, counter + 1}
-    #IO.inspect state
-    key = commonPrefix(nodeID,destID)
-    IO.inspect key
-    if(Map.fetch!(neighborTable,key) != destID) do
-      nextHop(Map.fetch!(neighborTable,key),destID,indexed_actors)
-    else
-      IO.puts "Result"
-      IO.inspect nodeID
-      IO.inspect destID
-      IO.puts "Result Out"
-      {:reply, state, state}
-    end
-  end
-
-  def handle_call({:UpdateRoutingTable, hash_key_routing_table}, _from, state) do
-    {nodeID, neighborTable, counter} = state
-    state = {nodeID, hash_key_routing_table, counter}
-    #IO.inspect(state)
-    {:reply, neighborTable, state}
-  end
-
-  def handle_call({:updatePID, numNodeID}, _from, state) do
-    {nodeID, neighborList, counter} = state
-    state = {numNodeID, neighborList, counter}
-    {:reply, nodeID, state}
+  # Handle call for associating specific Node with PID
+  def handle_call({:UpdatePIDState, nodeID}, _from, state) do
+    {a, b, c, d} = state
+    state = {nodeID, b, c, d}
+    {:reply, a, state}
   end
 end
 
