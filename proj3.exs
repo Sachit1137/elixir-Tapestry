@@ -10,28 +10,32 @@ defmodule Project3 do
         String.to_charlist(:crypto.hash(:sha, "#{nodeID}") |> Base.encode16())
       end)
 
-    routingTable =
-      Enum.reduce(hashKeyList, %{}, fn hashKeyID, acc ->
-        Map.put(acc, hashKeyID, calculateRoutingTable(hashKeyID, hashKeyList -- [hashKeyID]))
+      Enum.map(hashKeyList, fn hashKeyID->
+        calculateRoutingTable(hashKeyID, hashKeyList -- [hashKeyID])
       end)
 
-    {:ok, supervisorid} = Tapestrysupervisor.start_link(hashKeyList, numRequests, routingTable)
+    {:ok, supervisorid} = Tapestrysupervisor.start_link(hashKeyList, numRequests)
 
     children = Supervisor.which_children(supervisorid)
 
-    maxHops = List.last Enum.sort(Enum.map(Enum.sort(children), fn {_id, pid, _type, _module} ->
-      GenServer.call(pid, :getState)
-    end))
+    maxHops =
+      List.last(
+        Enum.sort(
+          Enum.map(Enum.sort(children), fn {_id, pid, _type, _module} ->
+            GenServer.call(pid, :getState)
+          end)
+        )
+      )
 
-    IO.puts "Maximum number of Hops = #{maxHops}"
+    IO.puts("Maximum number of Hops = #{maxHops}")
   end
 
   def calculateRoutingTable(hashKeyID, neighborList) do
-    Enum.reduce(neighborList, %{}, fn neighborKeyID, acc ->
+    Enum.reduce(neighborList, :ets.new(String.to_atom("#{hashKeyID}"), [:named_table, :public]), fn neighborKeyID, _acc ->
       key = commonPrefix(hashKeyID, neighborKeyID)
 
-      if Map.has_key?(acc, key) do
-        existingMapHashID = Map.fetch!(acc, key)
+        if :ets.lookup(String.to_atom("#{hashKeyID}"), key) != [] do
+        [{_,existingMapHashID}]= :ets.lookup(String.to_atom("#{hashKeyID}"), key)
         {hashKeyIntegerVal, _} = Integer.parse(List.to_string(hashKeyID), 16)
         {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
         {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
@@ -40,12 +44,12 @@ defmodule Project3 do
         distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
 
         if distance1 < distance2 do
-          Map.put(acc, key, existingMapHashID)
+          :ets.insert(String.to_atom("#{hashKeyID}"),{key, existingMapHashID})
         else
-          Map.put(acc, key, neighborKeyID)
+          :ets.insert(String.to_atom("#{hashKeyID}"),{key, neighborKeyID})
         end
       else
-        Map.put(acc, key, neighborKeyID)
+        :ets.insert(String.to_atom("#{hashKeyID}"),{key, neighborKeyID})
       end
     end)
   end
@@ -62,14 +66,17 @@ end
 defmodule Tapestrysupervisor do
   use Supervisor
 
-  def start_link(hashKeyList, numRequests,routingTable) do
-    Supervisor.start_link(__MODULE__, [hashKeyList, numRequests,routingTable])
+  def start_link(hashKeyList, numRequests) do
+    Supervisor.start_link(__MODULE__, [hashKeyList, numRequests])
   end
 
-  def init([hashKeyList, numRequests,routingTable]) do
+  def init([hashKeyList, numRequests]) do
     children =
       Enum.map(hashKeyList, fn hashKeyNodeID ->
-        worker(Tapestryalgo, [hashKeyNodeID, numRequests, routingTable, hashKeyList], id: hashKeyNodeID, restart: :permanent)
+        worker(Tapestryalgo, [hashKeyNodeID, numRequests, hashKeyList],
+          id: hashKeyNodeID,
+          restart: :permanent
+        )
       end)
 
     Supervisor.init(children, strategy: :one_for_one)
@@ -79,9 +86,9 @@ end
 defmodule Tapestryalgo do
   use GenServer
 
-  def start_link(hashKeyNodeID, numRequests, routingTable,hashKeyList) do
+  def start_link(hashKeyNodeID, numRequests, hashKeyList) do
     {:ok, pid} = GenServer.start_link(__MODULE__, 0)
-    GenServer.cast(pid, {:UpdateCounter, hashKeyNodeID, numRequests, routingTable, hashKeyList})
+    GenServer.cast(pid, {:UpdateCounter, hashKeyNodeID, numRequests, hashKeyList})
     {:ok, pid}
   end
 
@@ -89,33 +96,36 @@ defmodule Tapestryalgo do
     {:ok, counter}
   end
 
-  def startTapestry(hashKeyNodeID, numRequests, routingTable, hashKeyList) do
+  def startTapestry(hashKeyNodeID, numRequests, hashKeyList) do
     neighborList = hashKeyList -- [hashKeyNodeID]
-    destinationList =  Enum.take_random(neighborList,numRequests)
-    hopsList = Enum.map(destinationList, fn destID ->
-      counter = 0
-      startHop(hashKeyNodeID, routingTable, destID, counter)
-    end)
+    destinationList = Enum.take_random(neighborList, numRequests)
+
+    hopsList =
+      Enum.map(destinationList, fn destID ->
+        counter = 0
+        startHop(hashKeyNodeID, destID, counter)
+      end)
+
     List.last(Enum.sort(hopsList))
   end
 
-  def startHop(hashKeyNodeID, routingTable, destID, counter) do
+  def startHop(hashKeyNodeID, destID, counter) do
     counter = counter + 1
-    foundID = Map.fetch!(Map.fetch!(routingTable,hashKeyNodeID),(Project3.commonPrefix(hashKeyNodeID,destID)))
-    if (foundID != destID) do
-      startHop(foundID, routingTable, destID, counter)
+    [{_,foundID}] = :ets.lookup(String.to_atom("#{hashKeyNodeID}"), Project3.commonPrefix(hashKeyNodeID, destID))
+    if foundID != destID do
+      startHop(foundID, destID, counter)
     else
       counter
     end
   end
 
-  def handle_cast({:UpdateCounter, hashKeyNodeID, numRequests, routingTable, hashKeyList}, _state) do
-    state = startTapestry(hashKeyNodeID, numRequests, routingTable, hashKeyList)
-    #IO.inspect state
+  def handle_cast({:UpdateCounter, hashKeyNodeID, numRequests, hashKeyList}, _state) do
+    state = startTapestry(hashKeyNodeID, numRequests, hashKeyList)
+    # IO.inspect state
     {:noreply, state}
   end
 
-  def handle_call(:getState,_from, state) do
+  def handle_call(:getState, _from, state) do
     {:reply, state, state}
   end
 end
