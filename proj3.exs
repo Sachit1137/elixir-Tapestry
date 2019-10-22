@@ -10,11 +10,16 @@ defmodule Project3 do
         String.to_charlist(:crypto.hash(:sha, "#{nodeID}") |> Base.encode16())
       end)
 
-      Enum.map(hashKeyList, fn hashKeyID->
-        calculateRoutingTable(hashKeyID, hashKeyList -- [hashKeyID])
-      end)
+    Enum.map(hashKeyList, fn hashKeyID ->
+      calculateRoutingTable(hashKeyID, hashKeyList -- [hashKeyID])
+    end)
 
-    {:ok, supervisorid} = Tapestrysupervisor.start_link(hashKeyList, numRequests)
+    newNumNode = numNodes + 1
+    newNodeHashID = String.to_charlist(:crypto.hash(:sha, "#{newNumNode}") |> Base.encode16())
+    newNodeInsertion(newNodeHashID, hashKeyList)
+
+    {:ok, supervisorid} =
+      Tapestrysupervisor.start_link(hashKeyList ++ [newNodeHashID], numRequests)
 
     children = Supervisor.which_children(supervisorid)
 
@@ -31,27 +36,31 @@ defmodule Project3 do
   end
 
   def calculateRoutingTable(hashKeyID, neighborList) do
-    Enum.reduce(neighborList, :ets.new(String.to_atom("#{hashKeyID}"), [:named_table, :public]), fn neighborKeyID, _acc ->
-      key = commonPrefix(hashKeyID, neighborKeyID)
+    Enum.reduce(
+      neighborList,
+      :ets.new(String.to_atom("#{hashKeyID}"), [:named_table, :public]),
+      fn neighborKeyID, _acc ->
+        key = commonPrefix(hashKeyID, neighborKeyID)
 
         if :ets.lookup(String.to_atom("#{hashKeyID}"), key) != [] do
-        [{_,existingMapHashID}]= :ets.lookup(String.to_atom("#{hashKeyID}"), key)
-        {hashKeyIntegerVal, _} = Integer.parse(List.to_string(hashKeyID), 16)
-        {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
-        {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
+          [{_, existingMapHashID}] = :ets.lookup(String.to_atom("#{hashKeyID}"), key)
+          {hashKeyIntegerVal, _} = Integer.parse(List.to_string(hashKeyID), 16)
+          {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
+          {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
 
-        distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
-        distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
+          distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
+          distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
 
-        if distance1 < distance2 do
-          :ets.insert(String.to_atom("#{hashKeyID}"),{key, existingMapHashID})
+          if distance1 < distance2 do
+            :ets.insert(String.to_atom("#{hashKeyID}"), {key, existingMapHashID})
+          else
+            :ets.insert(String.to_atom("#{hashKeyID}"), {key, neighborKeyID})
+          end
         else
-          :ets.insert(String.to_atom("#{hashKeyID}"),{key, neighborKeyID})
+          :ets.insert(String.to_atom("#{hashKeyID}"), {key, neighborKeyID})
         end
-      else
-        :ets.insert(String.to_atom("#{hashKeyID}"),{key, neighborKeyID})
       end
-    end)
+    )
   end
 
   def commonPrefix(hashKeyID, neighborKeyID) do
@@ -60,6 +69,33 @@ defmodule Project3 do
         do: {:cont, level + 1},
         else: {:halt, {level, List.to_string([char])}}
     end)
+  end
+
+  def newNodeInsertion(newNodeHashID, hashKeyList) do
+    table =
+      Enum.map(hashKeyList, fn neighborKeyID ->
+        key = commonPrefix(neighborKeyID, newNodeHashID)
+
+        if :ets.lookup(String.to_atom("#{neighborKeyID}"), key) != [] do
+          [{_, existingMapHashID}] = :ets.lookup(String.to_atom("#{neighborKeyID}"), key)
+          {hashKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
+          {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
+          {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(newNodeHashID), 16)
+
+          distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
+          distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
+
+          if distance1 < distance2 do
+            :ets.insert(String.to_atom("#{neighborKeyID}"), {key, existingMapHashID})
+          else
+            :ets.insert(String.to_atom("#{neighborKeyID}"), {key, newNodeHashID})
+          end
+        else
+          :ets.insert(String.to_atom("#{neighborKeyID}"), {key, newNodeHashID})
+        end
+      end)
+
+    table ++ [calculateRoutingTable(newNodeHashID, hashKeyList)]
   end
 end
 
@@ -111,7 +147,13 @@ defmodule Tapestryalgo do
 
   def startHop(hashKeyNodeID, destID, counter) do
     counter = counter + 1
-    [{_,foundID}] = :ets.lookup(String.to_atom("#{hashKeyNodeID}"), Project3.commonPrefix(hashKeyNodeID, destID))
+
+    [{_, foundID}] =
+      :ets.lookup(
+        String.to_atom("#{hashKeyNodeID}"),
+        Project3.commonPrefix(hashKeyNodeID, destID)
+      )
+
     if foundID != destID do
       startHop(foundID, destID, counter)
     else
