@@ -1,158 +1,123 @@
-defmodule Proj3 do
-  use GenServer
-
+defmodule Project3 do
   def main do
-    # Input of the nodes, Topology and Algorithm
     input = System.argv()
     [numNodes, numRequests] = input
-    numNodes = String.to_integer(numNodes)
-    numRequests = String.to_integer(numRequests)
+    numNodes = numNodes |> String.to_integer()
+    numRequests = numRequests |> String.to_integer()
 
-    # Associating all nodes with their PID's
-    allNodes =
-      Enum.map(1..numNodes, fn x ->
-        pid = start_node()
-        updatePIDState(pid, x)
-        pid
+    hashKeyList =
+      Enum.map(1..numNodes, fn nodeID ->
+        String.to_charlist(:crypto.hash(:sha, "#{nodeID}") |> Base.encode16())
       end)
 
-    indexed_actors =
-      Stream.with_index(allNodes, 1)
-      |> Enum.reduce(%{}, fn {pids, nodeID}, acc ->
-        Map.put(acc, String.to_charlist(:crypto.hash(:sha, "#{nodeID}") |> Base.encode16()), pids)
+    routingTable =
+      Enum.reduce(hashKeyList, %{}, fn hashKeyID, acc ->
+        Map.put(acc, hashKeyID, calculateRoutingTable(hashKeyID, hashKeyList -- [hashKeyID]))
       end)
 
-    list_of_hexValues =
-      for {hash_key, _pid} <- indexed_actors do
-        hash_key
-      end
+    {:ok, supervisorid} = Tapestrysupervisor.start_link(hashKeyList, numRequests, routingTable)
 
-    Enum.map(indexed_actors, fn {hash_key, _pid} ->
-      fill_routing_table(
-        hash_key,
-        list_of_hexValues -- [hash_key]
-      )
-    end)
+    children = Supervisor.which_children(supervisorid)
 
-    hopping_list =
-      Enum.reduce(indexed_actors, [], fn {source_ID, pid}, final_hop_list ->
-        destinationList = Enum.take_random(list_of_hexValues -- [source_ID], numRequests)
+    maxHops = List.last Enum.sort(Enum.map(Enum.sort(children), fn {_id, pid, _type, _module} ->
+      GenServer.call(pid, :getState)
+    end))
 
-        final_hop_list ++
-          implementing_tapestry(
-            source_ID,
-            pid,
-            destinationList,
-            indexed_actors
-          )
-      end)
-
-    max_hops = Enum.max(hopping_list)
-    IO.puts("Maximum Hops = #{max_hops}")
+    IO.puts "Maximum number of Hops = #{maxHops}"
   end
 
-  def implementing_tapestry(
-        node_ID,
-        pid,
-        destinationList,
-        indexed_actors
-      ) do
-    Enum.reduce(destinationList, [], fn dest_ID, hop_list ->
-      hop_list ++
-        [
-          GenServer.call(
-            pid,
-            {:UpdateNextHop, node_ID, dest_ID, 1, indexed_actors}
-          )
-        ]
-    end)
-  end
+  def calculateRoutingTable(hashKeyID, neighborList) do
+    Enum.reduce(neighborList, %{}, fn neighborKeyID, acc ->
+      key = commonPrefix(hashKeyID, neighborKeyID)
 
-  def nextHop(new_node_ID, dest_ID, total_hops, indexed_actors) do
-    GenServer.call(
-      Map.fetch!(indexed_actors, new_node_ID),
-      {:UpdateNextHop, new_node_ID, dest_ID, total_hops, indexed_actors}
-    )
-  end
+      if Map.has_key?(acc, key) do
+        existingMapHashID = Map.fetch!(acc, key)
+        {hashKeyIntegerVal, _} = Integer.parse(List.to_string(hashKeyID), 16)
+        {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
+        {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
 
-  def fill_routing_table(hash_key, list_of_neighbors) do
-    Enum.reduce(
-      list_of_neighbors,
-      :ets.new(String.to_atom("Table_#{hash_key}"), [:named_table, :public]),
-      fn neighbor_key, _acc ->
-        key = commonPrefix(hash_key, neighbor_key)
+        distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
+        distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
 
-        if :ets.lookup(String.to_atom("Table_#{hash_key}"), key) != [] do
-          [{_, already_in_map_hexVal}] = :ets.lookup(String.to_atom("Table_#{hash_key}"), key)
-          {hash_key_integer, _} = Integer.parse(List.to_string(hash_key), 16)
-          {already_in_map_integer, _} = Integer.parse(List.to_string(already_in_map_hexVal), 16)
-          {neighbor_key_integer, _} = Integer.parse(List.to_string(neighbor_key), 16)
-
-          dist1 = abs(hash_key_integer - already_in_map_integer)
-          dist2 = abs(hash_key_integer - neighbor_key_integer)
-
-          if dist1 < dist2 do
-            :ets.insert(String.to_atom("Table_#{hash_key}"), {key, already_in_map_hexVal})
-          else
-            :ets.insert(String.to_atom("Table_#{hash_key}"), {key, neighbor_key})
-          end
+        if distance1 < distance2 do
+          Map.put(acc, key, existingMapHashID)
         else
-          :ets.insert(String.to_atom("Table_#{hash_key}"), {key, neighbor_key})
+          Map.put(acc, key, neighborKeyID)
         end
+      else
+        Map.put(acc, key, neighborKeyID)
       end
-    )
-  end
-
-  def commonPrefix(hash_key, neighbor_key) do
-    Enum.reduce_while(neighbor_key, 0, fn char2, level ->
-      if Enum.at(hash_key, level) == char2,
-        do: {:cont, level + 1},
-        else: {:halt, {level, List.to_string([char2])}}
     end)
   end
 
-  def init(:ok) do
-    {:ok, {0, 1}}
-  end
-
-  def start_node() do
-    {:ok, pid} = GenServer.start_link(__MODULE__, :ok, [])
-    pid
-  end
-
-  def updatePIDState(pid, nodeID) do
-    GenServer.call(pid, {:UpdatePIDState, nodeID})
-  end
-
-  def handle_call(
-        {:UpdateNextHop, node_ID, dest_ID, total_hops, indexed_actors},
-        _from,
-        state
-      ) do
-    key = commonPrefix(node_ID, dest_ID)
-    [{_, new_node_ID}] = :ets.lookup(String.to_atom("Table_#{node_ID}"), key)
-
-    if(new_node_ID == dest_ID) do
-      {:reply, total_hops, state}
-    else
-      final_hop_count =
-        nextHop(
-          new_node_ID,
-          dest_ID,
-          total_hops + 1,
-          indexed_actors
-        )
-
-      {:reply, final_hop_count, state}
-    end
-  end
-
-  # Handle call for associating specific Node with PID
-  def handle_call({:UpdatePIDState, nodeID}, _from, state) do
-    {a, b} = state
-    state = {nodeID, b}
-    {:reply, a, state}
+  def commonPrefix(hashKeyID, neighborKeyID) do
+    Enum.reduce_while(neighborKeyID, 0, fn char, level ->
+      if Enum.at(hashKeyID, level) == char,
+        do: {:cont, level + 1},
+        else: {:halt, {level, List.to_string([char])}}
+    end)
   end
 end
 
-Proj3.main()
+defmodule Tapestrysupervisor do
+  use Supervisor
+
+  def start_link(hashKeyList, numRequests,routingTable) do
+    Supervisor.start_link(__MODULE__, [hashKeyList, numRequests,routingTable])
+  end
+
+  def init([hashKeyList, numRequests,routingTable]) do
+    children =
+      Enum.map(hashKeyList, fn hashKeyNodeID ->
+        worker(Tapestryalgo, [hashKeyNodeID, numRequests, routingTable, hashKeyList], id: hashKeyNodeID, restart: :permanent)
+      end)
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+end
+
+defmodule Tapestryalgo do
+  use GenServer
+
+  def start_link(hashKeyNodeID, numRequests, routingTable,hashKeyList) do
+    {:ok, pid} = GenServer.start_link(__MODULE__, 0)
+    GenServer.cast(pid, {:UpdateCounter, hashKeyNodeID, numRequests, routingTable, hashKeyList})
+    {:ok, pid}
+  end
+
+  def init(counter) do
+    {:ok, counter}
+  end
+
+  def startTapestry(hashKeyNodeID, numRequests, routingTable, hashKeyList) do
+    neighborList = hashKeyList -- [hashKeyNodeID]
+    destinationList =  Enum.take_random(neighborList,numRequests)
+    hopsList = Enum.map(destinationList, fn destID ->
+      counter = 0
+      startHop(hashKeyNodeID, routingTable, destID, counter)
+    end)
+    List.last(Enum.sort(hopsList))
+  end
+
+  def startHop(hashKeyNodeID, routingTable, destID, counter) do
+    counter = counter + 1
+    foundID = Map.fetch!(Map.fetch!(routingTable,hashKeyNodeID),(Project3.commonPrefix(hashKeyNodeID,destID)))
+    if (foundID != destID) do
+      startHop(foundID, routingTable, destID, counter)
+    else
+      counter
+    end
+  end
+
+  def handle_cast({:UpdateCounter, hashKeyNodeID, numRequests, routingTable, hashKeyList}, _state) do
+    state = startTapestry(hashKeyNodeID, numRequests, routingTable, hashKeyList)
+    #IO.inspect state
+    {:noreply, state}
+  end
+
+  def handle_call(:getState,_from, state) do
+    {:reply, state, state}
+  end
+end
+
+Project3.main()
