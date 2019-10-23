@@ -107,12 +107,12 @@ defmodule Tapestrysupervisor do
   end
 
   def init([hashKeyList, numRequests]) do
-    newList = Enum.chunk_every(Enum.to_list(hashKeyList), 100)
+    newList = Enum.chunk_every(Enum.to_list(hashKeyList), 10)
 
     children =
       Enum.map(newList, fn hashKeysNodeID ->
         worker(Tapestryalgo, [hashKeysNodeID, numRequests, hashKeyList],
-          #id: hashKeyNodeID,
+          # id: hashKeyNodeID,
           id: Enum.at(hashKeysNodeID, 0),
           restart: :permanent
         )
@@ -136,17 +136,19 @@ defmodule Tapestryalgo do
   end
 
   def startTapestry(hashKeysNodeID, numRequests, hashKeyList) do
-    newHopList = Enum.map(hashKeysNodeID, fn hashKeyNodeID ->
-      neighborList = hashKeyList -- [hashKeyNodeID]
-    destinationList = Enum.take_random(neighborList, numRequests)
+    newHopList =
+      Enum.map(hashKeysNodeID, fn hashKeyNodeID ->
+        neighborList = hashKeyList -- [hashKeyNodeID]
+        destinationList = Enum.take_random(neighborList, numRequests)
 
-    hopsList =
-      Enum.map(destinationList, fn destID ->
-        counter = 0
-        startHop(hashKeyNodeID, destID, counter)
+        hopsList =
+          Enum.map(destinationList, fn destID ->
+            counter = 0
+            startHop(hashKeyNodeID, destID, counter)
+          end)
+
+        List.last(Enum.sort(hopsList))
       end)
-      List.last(Enum.sort(hopsList))
-    end)
 
     List.last(Enum.sort(newHopList))
   end
