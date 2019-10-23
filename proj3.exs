@@ -23,16 +23,12 @@ defmodule Project3 do
 
     children = Supervisor.which_children(supervisorid)
 
-    maxHops =
-      List.last(
-        Enum.sort(
-          Enum.map(Enum.sort(children), fn {_id, pid, _type, _module} ->
-            GenServer.call(pid, :getState)
-          end)
-        )
-      )
+    max_hop_list =
+      Enum.map(Enum.sort(children), fn {_id, pid, _type, _module} ->
+        GenServer.call(pid, :getState)
+      end)
 
-    IO.puts("Maximum number of Hops = #{maxHops}")
+    IO.puts("Maximum number of Hops = #{Enum.max(max_hop_list)}")
   end
 
   def calculateRoutingTable(hashKeyID, neighborList) do
@@ -72,30 +68,29 @@ defmodule Project3 do
   end
 
   def newNodeInsertion(newNodeHashID, hashKeyList) do
-    table =
-      Enum.map(hashKeyList, fn neighborKeyID ->
-        key = commonPrefix(neighborKeyID, newNodeHashID)
+    Enum.map(hashKeyList, fn neighborKeyID ->
+      key = commonPrefix(neighborKeyID, newNodeHashID)
 
-        if :ets.lookup(String.to_atom("#{neighborKeyID}"), key) != [] do
-          [{_, existingMapHashID}] = :ets.lookup(String.to_atom("#{neighborKeyID}"), key)
-          {hashKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
-          {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
-          {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(newNodeHashID), 16)
+      if :ets.lookup(String.to_atom("#{neighborKeyID}"), key) != [] do
+        [{_, existingMapHashID}] = :ets.lookup(String.to_atom("#{neighborKeyID}"), key)
+        {hashKeyIntegerVal, _} = Integer.parse(List.to_string(neighborKeyID), 16)
+        {existingMapIntegerVal, _} = Integer.parse(List.to_string(existingMapHashID), 16)
+        {neighborKeyIntegerVal, _} = Integer.parse(List.to_string(newNodeHashID), 16)
 
-          distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
-          distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
+        distance1 = abs(hashKeyIntegerVal - existingMapIntegerVal)
+        distance2 = abs(hashKeyIntegerVal - neighborKeyIntegerVal)
 
-          if distance1 < distance2 do
-            :ets.insert(String.to_atom("#{neighborKeyID}"), {key, existingMapHashID})
-          else
-            :ets.insert(String.to_atom("#{neighborKeyID}"), {key, newNodeHashID})
-          end
+        if distance1 < distance2 do
+          :ets.insert(String.to_atom("#{neighborKeyID}"), {key, existingMapHashID})
         else
           :ets.insert(String.to_atom("#{neighborKeyID}"), {key, newNodeHashID})
         end
-      end)
+      else
+        :ets.insert(String.to_atom("#{neighborKeyID}"), {key, newNodeHashID})
+      end
+    end)
 
-    table ++ [calculateRoutingTable(newNodeHashID, hashKeyList)]
+    calculateRoutingTable(newNodeHashID, hashKeyList)
   end
 end
 
@@ -112,7 +107,6 @@ defmodule Tapestrysupervisor do
     children =
       Enum.map(newList, fn hashKeysNodeID ->
         worker(Tapestryalgo, [hashKeysNodeID, numRequests, hashKeyList],
-          # id: hashKeyNodeID,
           id: Enum.at(hashKeysNodeID, 0),
           restart: :permanent
         )
@@ -141,21 +135,22 @@ defmodule Tapestryalgo do
         neighborList = hashKeyList -- [hashKeyNodeID]
         destinationList = Enum.take_random(neighborList, numRequests)
 
+        # x = Enum.at(destinationList,0)
+        # IO.puts "#{hashKeyNodeID}-> #{x}"
+
         hopsList =
           Enum.map(destinationList, fn destID ->
-            counter = 0
-            startHop(hashKeyNodeID, destID, counter)
+            startHop(hashKeyNodeID, destID, 0)
           end)
 
-        List.last(Enum.sort(hopsList))
+        Enum.max(hopsList)
       end)
 
-    List.last(Enum.sort(newHopList))
+    # IO.inspect newHopList
+    Enum.max(newHopList)
   end
 
   def startHop(hashKeyNodeID, destID, counter) do
-    counter = counter + 1
-
     [{_, foundID}] =
       :ets.lookup(
         String.to_atom("#{hashKeyNodeID}"),
@@ -163,15 +158,14 @@ defmodule Tapestryalgo do
       )
 
     if foundID != destID do
-      startHop(foundID, destID, counter)
+      startHop(foundID, destID, counter + 1)
     else
-      counter
+      counter + 1
     end
   end
 
   def handle_cast({:UpdateCounter, hashKeyNodeID, numRequests, hashKeyList}, _state) do
     state = startTapestry(hashKeyNodeID, numRequests, hashKeyList)
-    # IO.inspect state
     {:noreply, state}
   end
 
