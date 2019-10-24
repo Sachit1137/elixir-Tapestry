@@ -164,12 +164,13 @@ defmodule Tapestryworker do
 
   def handle_cast(
         {:update_next_hop, node_ID, dest_ID, total_hops},
-        _state
+        state
       ) do
     key = Proj3.common_prefix(node_ID, dest_ID)
     [{_, new_node_ID}] = :ets.lookup(String.to_atom("Table_#{node_ID}"), key)
-
-    state = {node_ID, total_hops}
+  
+    #storing only max hop value for every destination node
+    state = Enum.max([state,total_hops])
 
     if(new_node_ID == dest_ID) do
       {:noreply, state}
@@ -185,8 +186,7 @@ defmodule Tapestryworker do
   end
 
   def handle_call(:getState, _from, state) do
-    {_, hops} = state
-    {:reply, hops, state}
+    {:reply, state, state}
   end
 end
 
