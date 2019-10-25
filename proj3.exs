@@ -1,6 +1,6 @@
 defmodule Proj3 do
   def main do
-    # Input of the nodes, Topology and Algorithm
+    # Input of the number of nodes, number of request and number of failure nodes
     input = System.argv()
     [num_nodes, num_requests, num_fail_nodes] = input
     num_nodes = String.to_integer(num_nodes)
