@@ -2,9 +2,10 @@ defmodule Proj3 do
   def main do
     # Input of the nodes, Topology and Algorithm
     input = System.argv()
-    [num_nodes, num_requests] = input
+    [num_nodes, num_requests, num_fail_nodes] = input
     num_nodes = String.to_integer(num_nodes)
     num_requests = String.to_integer(num_requests)
+    num_fail_nodes = String.to_integer(num_fail_nodes)
 
     list_of_hexValues =
       Enum.map(1..(num_nodes + 1), fn nodeID ->
@@ -13,12 +14,19 @@ defmodule Proj3 do
 
     # table for linking hash with their pids
     :ets.new(:indexed_actors, [:named_table, :public])
+    :ets.new(:indexed_pids, [:named_table, :public])
 
     # using supervisor to initialise all the workers
     children =
       Enum.map(list_of_hexValues, fn hash ->
         Supervisor.child_spec({Tapestryworker, []}, id: hash, restart: :permanent)
       end)
+
+    new_num_node = num_nodes + 2
+    new_hash = String.to_charlist(:crypto.hash(:sha, "#{new_num_node}") |> Base.encode16())
+
+    children =
+      children ++ [Supervisor.child_spec({Tapestryworker, []}, id: new_hash, restart: :permanent)]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Tapestrysupervisor)
     result = Supervisor.which_children(Tapestrysupervisor)
@@ -27,7 +35,20 @@ defmodule Proj3 do
       :ets.insert(:indexed_actors, {hash, pid})
     end)
 
+    Enum.map(result, fn {hash, pid, _, _} ->
+      :ets.insert(:indexed_pids, {pid, hash})
+    end)
+
+    list_of_pids =
+      Enum.map(result, fn {_, pid, _, _} ->
+        pid
+      end)
+
+    list_of_pids = list_of_pids -- [List.last(list_of_pids)]
+
     list_without_newNode = list_of_hexValues -- [List.last(list_of_hexValues)]
+
+    create_fault_tol_table(new_hash, list_of_hexValues)
 
     # creating routing tables for all nodes except the last node
     Enum.map(list_without_newNode, fn hash_key ->
@@ -41,27 +62,51 @@ defmodule Proj3 do
     new_num_node = List.last(list_of_hexValues)
     node_insertion(new_num_node, list_without_newNode)
 
+    killed_pids =
+      Enum.map(Enum.take_random(list_of_pids, num_fail_nodes), fn pid ->
+        Process.exit(pid, :kill)
+        pid
+      end)
+
+    killed_hash =
+      Enum.map(killed_pids, fn x ->
+        [{_, hash}] = :ets.lookup(:indexed_pids, x)
+        hash
+      end)
+
+    new_dest_list = list_of_hexValues -- killed_hash
+
     # Start Hopping
-    Enum.map(list_of_hexValues, fn source_ID ->
-      destinationList = Enum.take_random(list_of_hexValues -- [source_ID], num_requests)
+    Enum.map(new_dest_list, fn source_ID ->
+      destinationList = Enum.take_random(new_dest_list -- [source_ID], num_requests)
 
       [{_, pid}] = :ets.lookup(:indexed_actors, source_ID)
 
       implementing_tapestry(
         source_ID,
         pid,
-        destinationList
+        destinationList,
+        new_hash
       )
     end)
 
     hopping_list =
-      Enum.reduce(list_of_hexValues, [], fn hash_key, list ->
+      Enum.reduce(new_dest_list, [], fn hash_key, list ->
         [{_, pid}] = :ets.lookup(:indexed_actors, hash_key)
         list ++ [GenServer.call(pid, :getState)]
       end)
 
     max_hops = Enum.max(hopping_list)
     IO.puts("Maximum Hops = #{max_hops}")
+  end
+
+  def create_fault_tol_table(new_hash, list_of_hexValues) do
+    :ets.new(:fault_tol_table, [:bag, :named_table, :public])
+
+    Enum.map(list_of_hexValues, fn hash_key ->
+      key = common_prefix(new_hash, hash_key)
+      :ets.insert(:fault_tol_table, {key, hash_key})
+    end)
   end
 
   def node_insertion(new_num_node, list_without_newNode) do
@@ -78,16 +123,16 @@ defmodule Proj3 do
   def implementing_tapestry(
         node_ID,
         pid,
-        destinationList
+        destinationList,
+        new_hash
       ) do
     Enum.map(destinationList, fn dest_ID ->
       GenServer.cast(
         pid,
-        {:update_next_hop, node_ID, dest_ID, 1}
+        {:update_next_hop, node_ID, dest_ID, new_hash, 1}
       )
 
-      # making one request per second
-      :timer.sleep(1000)
+      # :timer.sleep(1000)
     end)
   end
 
@@ -143,17 +188,49 @@ defmodule Tapestryworker do
     {:ok, hops}
   end
 
-  def nextHop(new_node_ID, dest_ID, total_hops) do
+  def nextHop(new_node_ID, dest_ID, new_hash, total_hops) do
     [{_, pid}] = :ets.lookup(:indexed_actors, new_node_ID)
+
+    if Process.alive?(pid) != True do
+      [{_, new_pid}] = :ets.lookup(:indexed_actors, new_hash)
+
+      GenServer.cast(
+        new_pid,
+        {:update_fault_hop, new_node_ID, dest_ID, new_hash, total_hops + 1}
+      )
+    end
 
     GenServer.cast(
       pid,
-      {:update_next_hop, new_node_ID, dest_ID, total_hops}
+      {:update_next_hop, new_node_ID, dest_ID, new_hash, total_hops}
     )
   end
 
   def handle_cast(
-        {:update_next_hop, node_ID, dest_ID, total_hops},
+        {:update_fault_hop, new_node_ID, dest_ID, _new_hash, total_hops},
+        state
+      ) do
+    key = Proj3.common_prefix(new_node_ID, dest_ID)
+
+    values = :ets.lookup(:fault_tol_table, key)
+
+    list =
+      Enum.map(values, fn x ->
+        {_, hash} = x
+        hash
+      end)
+
+    if Enum.find(list, fn _x -> dest_ID end) == dest_ID do
+      state = Enum.max([state, total_hops])
+      {:noreply, state}
+    end
+
+    state = Enum.max([state, total_hops])
+    {:noreply, state}
+  end
+
+  def handle_cast(
+        {:update_next_hop, node_ID, dest_ID, new_hash, total_hops},
         state
       ) do
     key = Proj3.common_prefix(node_ID, dest_ID)
@@ -167,6 +244,7 @@ defmodule Tapestryworker do
       nextHop(
         new_node_ID,
         dest_ID,
+        new_hash,
         total_hops + 1
       )
 
