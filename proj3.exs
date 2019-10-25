@@ -50,7 +50,8 @@ defmodule Proj3 do
       implementing_tapestry(
         source_ID,
         pid,
-        destinationList
+        destinationList,
+        num_requests
       )
     end)
 
@@ -78,7 +79,8 @@ defmodule Proj3 do
   def implementing_tapestry(
         node_ID,
         pid,
-        destinationList
+        destinationList,
+        num_requests
       ) do
     Enum.map(destinationList, fn dest_ID ->
       GenServer.cast(
@@ -86,8 +88,10 @@ defmodule Proj3 do
         {:update_next_hop, node_ID, dest_ID, 1}
       )
 
-      # making one request per second
-      :timer.sleep(1000)
+      if num_requests > 1 and dest_ID != Enum.at(destinationList,length(destinationList)-1) do
+        # making one request per second
+        :timer.sleep(1000)
+      end
     end)
   end
 
