@@ -1,7 +1,7 @@
 # elixir-Tapestry
 Implementing Tapestry Algorithm
 
-Steps to run the program:-
+# Steps to run the program:-
 
 1. Download the file and unzip it
 
