@@ -1,4 +1,4 @@
-# Tapestry ALgorithm
+# Tapestry Algorithm
 Tapestry is a decentralized distributed system. It is an overlay network that implements simple
 key-based routing. Each node serves as both an object store and a router that applications can
 contact to obtain objects. In a Tapestry network, objects are “published” at nodes, and once an
